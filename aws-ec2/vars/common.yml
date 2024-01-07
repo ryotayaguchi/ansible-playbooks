@@ -1,0 +1,7 @@
+base_name: meow
+private_domain: meow.local
+alb_name: "{{ base_name }}"
+alb_secgrp_name: "{{ base_name }}-alb"
+alb_targrp_name: "{{ base_name }}"
+ins_secgrp_name: "{{ base_name }}-ec2"
+ins_ssm_name: "{{ base_name }}-gen"

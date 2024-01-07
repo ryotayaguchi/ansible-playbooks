@@ -1,0 +1,107 @@
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  pre_tasks:
+    - tags: [ always ]
+      loop: ["common.yml","{{ env }}/environment.yml"]
+      ansible.builtin.include_vars: "{{ item }}"
+  tasks:
+    - tags: [ never, create, delete ]
+      block:
+        - name: Get VPC info
+          register: reg_vpc
+          amazon.aws.ec2_vpc_net_info:
+            profile: "{{ profile|default(omit) }}"
+            region: "{{ region }}"
+            filters: {"tag:Name": "default"}
+        - name: Get VPC ID
+          ansible.builtin.set_fact:
+            vpc_id: "{{ reg_vpc.vpcs[0].vpc_id }}"
+
+    - tags: [ never, create ]
+      block:
+        - name: Create security group
+          amazon.aws.ec2_group:
+            profile: "{{ profile|default(omit) }}"
+            region: "{{ region }}"
+            vpc_id: "{{ vpc_id }}"
+            name: "{{ alb_secgrp_name }}"
+            state: present
+            description: "{{ alb_secgrp_name }}"
+            rules:
+              - proto: tcp
+                ports: 80
+                cidr_ip: "0.0.0.0/0"
+                rule_desc: ""
+        - name: Create target group
+          community.aws.elb_target_group:
+            profile: "{{ profile|default(omit) }}"
+            region: "{{ region }}"
+            vpc_id: "{{ vpc_id }}"
+            name: "{{ alb_targrp_name }}"
+            state: present
+            modify_targets: false
+            port: 80
+            protocol: http
+            health_check_protocol: http
+            health_check_path: "/"
+            health_check_port: 80
+            successful_response_codes: 200
+            health_check_interval: 10
+            health_check_timeout: 5
+            healthy_threshold_count: 3
+            unhealthy_threshold_count: 2
+            deregistration_delay_timeout: 30
+        - name: Get security group info
+          register: reg_secgrp
+          amazon.aws.ec2_group_info:
+            profile: "{{ profile|default(omit) }}"
+            region:  "{{ region }}"
+            filters:
+              "vpc-id": "{{ vpc_id }}"
+              "group-name": ["{{ alb_secgrp_name }}"]
+        - name: Get VPC subnet info
+          register: reg_subnet
+          amazon.aws.ec2_vpc_subnet_info:
+            profile: "{{ profile|default(omit) }}"
+            region: "{{ region }}"
+            filters: {"vpc-id": "{{ vpc_id }}"}
+        - name: Create ALB
+          community.aws.elb_application_lb:
+            profile: "{{ profile|default(omit) }}"
+            region: "{{ region }}"
+            name: "{{ alb_name }}"
+            state: present
+            security_groups: "{{ reg_secgrp.security_groups | json_query('[].group_id') }}"
+            subnets: "{{ reg_subnet | json_query('subnets[].subnet_id') }}"
+            listeners:
+              - Protocol: HTTP
+                Port: 80
+                DefaultActions: [ {"Type":"forward", "TargetGroupName":"{{ alb_targrp_name }}"} ]
+
+    - tags: [ never, delete ]
+      block:
+        - name: Delete ALB
+          community.aws.elb_application_lb:
+            profile: "{{ profile|default(omit) }}"
+            region: "{{ region }}"
+            name: "{{ alb_name }}"
+            state: absent
+        - name: Delete target group
+          community.aws.elb_target_group:
+            profile: "{{ profile|default(omit) }}"
+            region: "{{ region }}"
+            vpc_id: "{{ vpc_id }}"
+            name: "{{ alb_targrp_name }}"
+            state: absent
+        - name: Delete security group
+          until: reg_secgrp.failed == false
+          retries: 6
+          delay: 10
+          register: reg_secgrp
+          amazon.aws.ec2_group:
+            profile: "{{ profile|default(omit) }}"
+            region: "{{ region }}"
+            vpc_id: "{{ vpc_id }}"
+            name: "{{ alb_secgrp_name }}"
+            state: absent
